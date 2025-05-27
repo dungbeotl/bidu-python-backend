@@ -15,14 +15,14 @@ T = TypeVar("T", bound=Document)
 class BaseRepository(Generic[T]):
     """Base repository sử dụng Beanie ODM."""
 
-    def __init__(self, model_class: Type[T]):
+    def __init__(self, model: Type[T]):
         """
         Khởi tạo repository với Beanie Document class.
 
         Args:
-            model_class: Beanie Document class.
+            model: Beanie Document class.
         """
-        self.model_class = model_class
+        self.model = model
 
     async def get(self, id: str) -> Optional[T]:
         """
@@ -37,7 +37,7 @@ class BaseRepository(Generic[T]):
         try:
             # Chuyển đổi string ID thành ObjectId
             object_id = ObjectId(id) if isinstance(id, str) else id
-            return await self.model_class.get(object_id)
+            return await self.model.get(object_id)
         except:
             return None
 
@@ -52,7 +52,7 @@ class BaseRepository(Generic[T]):
         Returns:
             Document nếu tìm thấy, None nếu không tìm thấy.
         """
-        return await self.model_class.find_one({field: value})
+        return await self.model.find_one({field: value})
 
     async def get_all_with_pagination(self, limit: int = 100, skip: int = 0) -> List[T]:
         """
@@ -65,7 +65,7 @@ class BaseRepository(Generic[T]):
         Returns:
             Danh sách các documents.
         """
-        return await self.model_class.find_all().skip(skip).limit(limit).to_list()
+        return await self.model.find_all().skip(skip).limit(limit).to_list()
 
     async def get_all(self) -> List[T]:
         """
@@ -74,7 +74,7 @@ class BaseRepository(Generic[T]):
         Returns:
             Danh sách các documents.
         """
-        return await self.model_class.find_all().to_list()
+        return await self.model.find_all().to_list()
 
     async def get_filtered(
         self,
@@ -108,7 +108,7 @@ class BaseRepository(Generic[T]):
             sort_dict["createdAt"] = -1  # Mặc định sắp xếp theo createdAt giảm dần
 
         # Query với filter và sorting
-        query = self.model_class.find(filter_dict)
+        query = self.model.find(filter_dict)
 
         # Áp dụng sort
         for field, order in sort_dict.items():
@@ -133,11 +133,11 @@ class BaseRepository(Generic[T]):
         """
         # Nếu là dict, tạo đối tượng document từ dict
         if isinstance(data, dict):
-            document = self.model_class(**data)
+            document = self.model(**data)
 
         # Nếu là pydantic model (nhưng không phải Document)
         elif isinstance(data, BaseModel) and not isinstance(data, Document):
-            document = self.model_class(**data.model_dump())
+            document = self.model(**data.model_dump())
 
         # Nếu đã là Document
         else:
@@ -213,7 +213,7 @@ class BaseRepository(Generic[T]):
         if filter_dict is None:
             filter_dict = {}
 
-        return await self.model_class.find(filter_dict).count()
+        return await self.model.find(filter_dict).count()
 
     async def bulk_create(
         self, data_list: List[Union[Dict[str, Any], BaseModel]]
@@ -238,17 +238,17 @@ class BaseRepository(Generic[T]):
                 item_data = data.copy()
 
             # Thêm timestamps nếu model có các trường đó
-            if hasattr(self.model_class, "createdAt"):
+            if hasattr(self.model, "createdAt"):
                 item_data["createdAt"] = now
-            if hasattr(self.model_class, "updatedAt"):
+            if hasattr(self.model, "updatedAt"):
                 item_data["updatedAt"] = now
 
             # Tạo document
-            document = self.model_class(**item_data)
+            document = self.model(**item_data)
             documents.append(document)
 
         # Lưu tất cả vào database
-        return await self.model_class.insert_many(documents)
+        return await self.model.insert_many(documents)
 
     async def bulk_update(self, updates: List[Dict[str, Any]]) -> int:
         """
@@ -288,7 +288,7 @@ class BaseRepository(Generic[T]):
             return []
 
         # Sử dụng In operator với trường _id thay vì id
-        documents = await self.model_class.find(
+        documents = await self.model.find(
             {"_id": {"$in": object_ids}}
         ).to_list()
         return documents
@@ -308,6 +308,6 @@ class BaseRepository(Generic[T]):
             Dictionary chứa kết quả và metadata phân trang.
         """
         # Beanie hỗ trợ aggregation qua motor
-        collection = self.model_class.get_motor_collection()
+        collection = self.model.get_motor_collection()
         result = await aggregate_paginate(collection, pipeline, page, limit)
         return result

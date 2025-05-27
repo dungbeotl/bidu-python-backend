@@ -1,7 +1,11 @@
 # Import các repositories
 
-from app.db.repositories.base import BaseRepository
-from app.db.repositories.user import UserRepository
-from app.db.repositories.product import ProductRepository
-from app.db.repositories.address import AddressRepository  # Sẽ tạo file này sau
-from app.db.repositories.ecategory import ECategoryRepository
+from .base import BaseRepository
+from .user import UserRepository
+from .product import ProductRepository
+from .address import AddressRepository
+from .ecategory import ECategoryRepository
+from .order_item import OrderItemRepository
+from .feedback import FeedbackRepository
+from .shop import ShopRepository
+from .order import OrderRepository

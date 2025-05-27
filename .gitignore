@@ -80,3 +80,6 @@ logs/
 
 # FastAPI specific
 .pytest_cache/
+
+# Firebase credentials
+app/config/firebase/*.json

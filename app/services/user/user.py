@@ -1,16 +1,16 @@
-from datetime import datetime
 from typing import Dict, List, Optional, Any, Union
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
 import logging
 from fastapi.responses import StreamingResponse
-import io
-import csv
-import json
 from app.core.exceptions import (
     BadRequestException,
     DatabaseException,
 )
 from app.db.repositories import UserRepository
-from app.services import BaseService
+from app.services import BaseService, AddressService
+from app.utils import ExportUtil, to_hashmap, to_lower_strip
+from app.constants import unknown
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ class UserService(BaseService[UserRepository]):
         """
         try:
             # Lấy dữ liệu từ repository
-            users_data = await self.repository.get_users_for_personalize(
+            users_data = await self.get_users_for_personalize(
                 limit=limit, filter_dict=filter_dict
             )
 
@@ -85,9 +85,9 @@ class UserService(BaseService[UserRepository]):
 
             # Xử lý xuất theo định dạng
             if format.lower() == "json":
-                return await self._export_personalize_to_json(processed_data)
+                return await ExportUtil()._export_dataset_to_json(processed_data)
             elif format.lower() == "csv":
-                return await self._export_personalize_to_csv(processed_data)
+                return await ExportUtil()._export_dataset_to_csv(processed_data)
             else:
                 raise BadRequestException(
                     detail=f"Định dạng {format} không được hỗ trợ"
@@ -97,63 +97,137 @@ class UserService(BaseService[UserRepository]):
             logger.error(f"Error exporting users for personalize: {str(e)}")
             raise DatabaseException(detail=f"Lỗi khi xuất dữ liệu người dùng: {str(e)}")
 
-    async def _export_personalize_to_json(
-        self, users_data: List[Dict[str, Any]]
-    ) -> StreamingResponse:
+    async def get_users_for_personalize(
+        self,
+        limit: Optional[int] = None,
+        skip: int = 0,
+        filter_dict: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         """
-        Xuất dữ liệu người dùng cho AWS Personalize dưới dạng JSON.
-
-        Args:
-            users_data: Danh sách người dùng đã xử lý.
-
-        Returns:
-            StreamingResponse với dữ liệu JSON.
+        Lấy dữ liệu người dùng được định dạng cho AWS Personalize.
         """
-        # AWS Personalize yêu cầu mỗi record trên một dòng không có dấu phẩy ở cuối
-        jsonl_output = ""
-        for user in users_data:
-            jsonl_output += json.dumps(user) + "\n"
+        try:
+            # Lấy dữ liệu từ repository
+            users_data = await self.repository.get_users_for_personalize(
+                limit=limit, filter_dict=filter_dict
+            )
+            print("Get users for personalize: ", len(users_data))
 
-        # Trả về response
-        return StreamingResponse(
-            iter([jsonl_output]),
-            media_type="application/json",
-            headers={
-                "Content-Disposition": f"attachment; filename=users_personalize_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
-            },
-        )
+            # Lấy tất cả địa chỉ có is_default là True
+            address_service = AddressService()
+            address_raw = await address_service.get_all_addresses()
+            address_hashmap = to_hashmap(data=address_raw, key="accessible_id")
 
-    async def _export_personalize_to_csv(
-        self, users_data: List[Dict[str, Any]]
-    ) -> StreamingResponse:
+            processed_users = []
+
+            print("Start processing users for personalize...")
+            # Xử lý dữ liệu
+            now = datetime.utcnow()
+            for user in users_data:
+                user_id = user["_id"]
+
+                # Xử lý gender
+                gender = "other"
+                if "gender" in user and user["gender"]:
+                    gender_map = {1: "male", 2: "female", 3: "other"}
+                    gender = gender_map.get(user["gender"], None)
+
+                # Xử lý age_group - Sử dụng trường "birthday" thay vì "dateOfBirth"
+                age_group = unknown
+                if "birthday" in user and user["birthday"]:
+                    try:
+                        # Xử lý birthday dạng string "DD/MM/YYYY"
+                        if isinstance(user["birthday"], str):
+                            # Phân tách ngày, tháng, năm
+                            day, month, year = user["birthday"].split("/")
+                            # Chuyển đổi thành đối tượng datetime
+                            dob = datetime(int(year), int(month), int(day))
+                        else:
+                            # Trường hợp birthday đã là đối tượng datetime
+                            dob = user["birthday"]
+
+                        # Tính tuổi
+                        age = relativedelta(now, dob).years
+
+                        if age < 18:
+                            age_group = "under_18"
+                        elif age <= 24:
+                            age_group = "18-24"
+                        elif age <= 34:
+                            age_group = "25-34"
+                        elif age <= 44:
+                            age_group = "35-44"
+                        else:
+                            age_group = "45+"
+                    except Exception as e:
+                        # Log lỗi nếu cần
+                        print(f"Error processing birthday: {str(e)}")
+                        # Nếu có lỗi khi tính tuổi, sử dụng giá trị mặc định
+                        age_group = unknown
+
+                # Xử lý membership_duration
+                membership_duration = unknown
+                if "createdAt" in user and user["createdAt"]:
+                    try:
+                        created_at = user["createdAt"]
+                        months = (now.year - created_at.year) * 12 + (
+                            now.month - created_at.month
+                        )
+
+                        if months < 6:
+                            membership_duration = "0-6_months"
+                        elif months < 12:
+                            membership_duration = "6-12_months"
+                        elif months < 24:
+                            membership_duration = "1-2_years"
+                        else:
+                            membership_duration = "2+_years"
+                    except Exception:
+                        # Nếu có lỗi khi tính thời gian, sử dụng giá trị mặc định
+                        membership_duration = unknown
+
+                # Xử lý location từ default_address
+                address = address_hashmap.get(user_id)
+                location = self._get_address_for_user(address)
+                # if address:
+                #     try:
+                #         # Xử lý location từ state nếu có
+                #         if (
+                #             "state" in address
+                #             and address["state"]
+                #             and "name" in address["state"]
+                #         ):
+                #             location = address["state"]["name"]
+                #     except Exception:
+                #         location = unknown
+
+                # Xây dựng đối tượng user cho personalize
+                personalize_user = {
+                    "USER_ID": user_id,
+                    "GENDER": gender,
+                    "AGE_GROUP": age_group,
+                    "MEMBERSHIP_DURATION": membership_duration,
+                    "LOCATION": to_lower_strip(location),
+                }
+
+                processed_users.append(personalize_user)
+
+            print("Processed users for personalize: ", len(processed_users))
+
+            return processed_users
+        except Exception as e:
+            logger.error(f"Error getting users for personalize: {str(e)}")
+            raise DatabaseException(detail=f"Lỗi khi lấy dữ liệu người dùng: {str(e)}")
+
+    def _get_address_for_user(self, address: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Xuất dữ liệu người dùng cho AWS Personalize dưới dạng CSV.
-
-        Args:
-            users_data: Danh sách người dùng đã xử lý.
-
-        Returns:
-            StreamingResponse với dữ liệu CSV.
+        Lấy địa chỉ cho user.
         """
-        output = io.StringIO()
-        writer = csv.writer(output)
-
-        # Viết header
-        if users_data:
-            writer.writerow(users_data[0].keys())
-
-        # Viết dữ liệu
-        for user in users_data:
-            writer.writerow(user.values())
-
-        # Reset về đầu file
-        output.seek(0)
-
-        # Trả về response
-        return StreamingResponse(
-            iter([output.getvalue()]),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename=users_personalize_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            },
-        )
+        if (
+            address
+            and "state" in address
+            and address["state"]
+            and "name" in address["state"]
+        ):
+            return address["state"]["name"]
+        return unknown

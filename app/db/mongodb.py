@@ -2,7 +2,16 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from beanie import init_beanie
 from app.core.config import settings
 
-from app.models import User, Product, Address, ECategory
+from app.models import (
+    User,
+    Product,
+    Address,
+    ECategory,
+    OrderItem,
+    Feedback,
+    Shop,
+    Order,
+)
 
 
 class MongoDB:
@@ -26,6 +35,10 @@ async def connect_to_mongo():
             Product,
             Address,
             ECategory,
+            OrderItem,
+            Feedback,
+            Shop,
+            Order,
             # Thêm các Document models khác ở đây nếu cần
         ],
     )

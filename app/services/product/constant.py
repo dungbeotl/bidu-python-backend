@@ -1,12 +1,13 @@
 from dataclasses import dataclass
-
+from app.constants import unknown
 
 # Constants
 class ProductStatus:
-    PENDING = "PENDING"
-    DELETED = "DELETED"
-    ACTIVE = "ACTIVE"
-    DRAFT = "DRAFT"
+    PENDING = "pending"
+    DELETED = "deleted"
+    ACTIVE = "active"
+    DRAFT = "draft"
+    UNAVAILABLE = "unavailable"
 
 
 class ApprovalStatus:
@@ -22,7 +23,6 @@ class CategoryNames:
     SEASON = "Season"
 
 
-DEFAULT_VALUE = "UNKNOWN"
 MAX_CATEGORY_LEVELS = 4
 
 
@@ -30,8 +30,8 @@ MAX_CATEGORY_LEVELS = 4
 class ProcessedProductDetails:
     """Dataclass để lưu thông tin chi tiết sản phẩm đã xử lý"""
 
-    gender: str = DEFAULT_VALUE
-    brand: str = DEFAULT_VALUE
-    origin: str = DEFAULT_VALUE
-    style: str = DEFAULT_VALUE
-    seasons: str = DEFAULT_VALUE
+    gender: str = unknown
+    brand: str = unknown
+    origin: str = unknown
+    style: str = unknown
+    seasons: str = unknown

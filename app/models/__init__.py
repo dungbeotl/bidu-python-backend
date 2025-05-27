@@ -3,7 +3,7 @@ Module chứa các model dữ liệu của ứng dụng.
 """
 
 # Export các model chính
-from app.models.user import (
+from .user import (
     User,
     UserModel,
     MemberType,
@@ -21,18 +21,39 @@ from app.models.user import (
     NameOrganizer,
     SocialAccount,
 )
-from app.models.product import (
+from .product import (
     Product,
     ProductModel,
 )
-from app.models.address import (
+from .address import (
     Address,
     AddressModel,
     ExpectedDelivery,
     AddressType,
     LocationModel,
 )
-from app.models.ecategory import (
+from .ecategory import (
     ECategory,
     ECategoryModel,
+)
+
+from .order_item import (
+    OrderItem,
+    OrderItemModel,
+)
+
+from .feedback import (
+    Feedback,
+    FeedbackModel,
+)
+
+from .shop import (
+    Shop,
+    ShopModel,
+    ShopIndustryType,
+)
+
+from .order import (
+    Order,
+    OrderModel,
 )

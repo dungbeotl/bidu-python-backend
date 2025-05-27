@@ -18,16 +18,16 @@ logger = logging.getLogger(__name__)
 class BaseElasticsearchService(Generic[M]):
     """Base service cho Elasticsearch."""
 
-    def __init__(self, index_name: str, model_class: Type[M]):
+    def __init__(self, index_name: str, model: Type[M]):
         """
         Khởi tạo Elasticsearch service.
 
         Args:
             index_name: Tên của index trong Elasticsearch.
-            model_class: Pydantic model class đại diện cho document.
+            model: Pydantic model class đại diện cho document.
         """
         self.index_name = index_name
-        self.model_class = model_class
+        self.model = model
         self.client = es.client
 
     async def create_index(
@@ -47,7 +47,7 @@ class BaseElasticsearchService(Generic[M]):
             if settings is None:
                 # Tự động sinh mappings từ model
                 properties = {}
-                for field_name, field in self.model_class.__fields__.items():
+                for field_name, field in self.model.__fields__.items():
                     # Xác định kiểu dữ liệu Elasticsearch tương ứng
                     if field.type_ == str:
                         field_type = "text"

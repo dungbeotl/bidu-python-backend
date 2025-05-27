@@ -2,8 +2,8 @@ from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, Union
 import logging
 from beanie import Document
 
-from app.db.repositories.base import BaseRepository
-from app.utils.serialization import convert_mongo_document
+from app.db.repositories import BaseRepository
+from app.utils import convert_mongo_document
 
 # Logger
 logger = logging.getLogger(__name__)

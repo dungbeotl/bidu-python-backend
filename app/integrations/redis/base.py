@@ -21,19 +21,19 @@ class BaseRedisService(Generic[M]):
     """Base service cho Redis."""
 
     def __init__(
-        self, prefix: str, model_class: Type[M], default_ttl: Optional[int] = None
+        self, prefix: str, model: Type[M], default_ttl: Optional[int] = None
     ):
         """
         Khởi tạo Redis service.
 
         Args:
             prefix: Tiền tố cho cache key.
-            model_class: Pydantic model class.
+            model: Pydantic model class.
             default_ttl: Thời gian sống mặc định của cache key (giây).
                          Nếu không có, sử dụng REDIS_TTL từ settings.
         """
         self.prefix = prefix
-        self.model_class = model_class
+        self.model = model
         self.default_ttl = default_ttl or settings.REDIS_TTL
         self.client = redis.client
 

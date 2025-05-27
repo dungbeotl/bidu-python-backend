@@ -4,7 +4,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import json
-from bson import ObjectId
 from fastapi.responses import JSONResponse
 
 from app.core import settings
@@ -14,7 +13,7 @@ from app.db import connect_to_mongo, close_mongo_connection  # Import từ app/d
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from app.utils.serialization import MongoJSONEncoder
-from app.api.errors.http_error import (
+from app.api.errors import (
     http_error_handler,
     validation_error_handler,
     pydantic_error_handler,
@@ -27,7 +26,7 @@ from app.api.errors.http_error import (
     input_error_handler,
     rate_limit_error_handler,
 )
-from app.core.exceptions import (
+from app.core import (
     DatabaseException,
     UnauthorizedException,
     NotFoundException,

@@ -3,8 +3,8 @@ from fastapi import APIRouter, Depends, Query, Path, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.api.dependencies import get_current_superuser
-from app.services.user import UserService
-from app.services.product import ProductService
+from app.services import UserService, ProductService, InteractionService
+from app.services.order import OrderService
 from bson import ObjectId
 
 router = APIRouter()
@@ -74,7 +74,7 @@ async def preview_users_for_personalize(
 
     # Lấy dữ liệu từ repository
     user_service = UserService()
-    users_data = await user_service.repository.get_users_for_personalize(
+    users_data = await user_service.get_users_for_personalize(
         limit=limit, filter_dict=filter_dict
     )
 
@@ -106,6 +106,7 @@ async def export_products_for_personalize(
     include_deleted: bool = Query(True, description="Bao gồm cả sản phẩm đã xóa"),
     include_categories: bool = Query(False, description="Bao gồm thông tin danh mục"),
     include_detail_info: bool = Query(False, description="Bao gồm thông tin chi tiết"),
+    include_variant: bool = Query(False, description="Bao gồm thông tin variant"),
     # current_user: Dict = Depends(get_current_superuser)
 ):
     """
@@ -131,6 +132,7 @@ async def export_products_for_personalize(
         filter_dict=filter_dict,
         include_categories=include_categories,
         include_detail_info=include_detail_info,
+        include_variant=include_variant,
     )
 
 
@@ -148,6 +150,7 @@ async def preview_products_for_personalize(
     include_deleted: bool = Query(False, description="Bao gồm cả sản phẩm đã xóa"),
     include_categories: bool = Query(False, description="Bao gồm thông tin danh mục"),
     include_detail_info: bool = Query(False, description="Bao gồm thông tin chi tiết"),
+    include_variant: bool = Query(False, description="Bao gồm thông tin variant"),
     # current_user: Dict = Depends(get_current_superuser)
 ):
     """
@@ -155,7 +158,7 @@ async def preview_products_for_personalize(
     Chỉ superuser mới có quyền truy cập.
     """
     # Tạo filter dict
-    filter_dict = {"_id": {"$eq": ObjectId("617bde26f8aa33001191691e")}}
+    filter_dict = {}
 
     # Lọc theo trạng thái phê duyệt
     if is_approved:
@@ -172,7 +175,131 @@ async def preview_products_for_personalize(
         filter_dict=filter_dict,
         include_categories=include_categories,
         include_detail_info=include_detail_info,
+        include_variant=include_variant,
     )
 
-    products_data = await product_service._process_products_for_personalize(products_raw)
+    products_data = await product_service._process_products_for_personalize(
+        products_raw
+    )
     return products_data
+
+
+@router.get(
+    "/personalize/interactions/preview",
+    response_model=List[Dict[str, Any]],
+    summary="Xem trước dữ liệu Tương tác (Interactions) cho AWS Personalize",
+    description="Xem trước dữ liệu tương tác đã được định dạng cho AWS Personalize.",
+)
+async def preview_interactions_for_personalize(
+    limit: int = Query(10, ge=1, le=10000, description="Số lượng tương tác tối đa"),
+    # current_user: Dict = Depends(get_current_superuser)
+):
+    """
+    Xem trước dữ liệu tương tác đã được định dạng cho AWS Personalize.
+    Chỉ superuser mới có quyền truy cập.
+    """
+
+    # Lấy dữ liệu từ repository
+    interaction_service = InteractionService()
+    interactions_raw = await interaction_service.get_interactions_for_personalize()
+    return interactions_raw
+
+
+@router.get(
+    "/personalize/interactions/export",
+    response_model=List[Dict[str, Any]],
+    summary="Xuất dữ liệu Tương tác (Interactions) cho AWS Personalize",
+    description="Xuất dữ liệu tương tác đã được định dạng cho AWS Personalize.",
+)
+async def export_interactions_for_personalize(
+    format: str = Query("json", description="Định dạng xuất (json, csv)"),
+    limit: int = Query(10, ge=1, le=10000, description="Số lượng tương tác tối đa"),
+    # current_user: Dict = Depends(get_current_superuser)
+):
+    """
+    Xuất dữ liệu tương tác đã được định dạng cho AWS Personalize.
+    Chỉ superuser mới có quyền truy cập.
+    """
+    # Lấy dữ liệu từ repository
+    interaction_service = InteractionService()
+    return await interaction_service.export_interactions_for_personalize(format=format)
+
+
+# **************************************************
+# Statistics Product/Orders Routes
+# **************************************************
+@router.get(
+    "/products/statistics/excel",
+    summary="Xuất thống kê sản phẩm bán chạy ra file Excel",
+    description="""
+    Xuất thống kê top 50 sản phẩm có lượt bán cao nhất ra file Excel.
+    
+    File Excel sẽ chứa các thông tin:
+    - Product ID: ID của sản phẩm
+    - Product Name: Tên sản phẩm 
+    - Product Shorten Link: Link rút gọn (bidu.vn + shorten_link)
+    - Product Sold: Số lượng đã bán
+    - Product Price: Giá sản phẩm (format: min-max)
+    - Product Created At: Ngày tạo (format: dd/mm/yyyy)
+    - Product Deleted At: Trạng thái xóa ("Deleted" hoặc "")
+    - Product Is Approved: Trạng thái phê duyệt (Approved/Draft/Pending)
+    - Product Shop Name: Tên shop
+    - Product Shop Shorten Link: Link shop (bidu.vn + shop_shorten_link)
+    """,
+    response_class=StreamingResponse,
+)
+async def export_product_statistics_excel(
+    # current_user: Dict = Depends(get_current_superuser)
+):
+    """
+    Xuất thống kê sản phẩm bán chạy ra file Excel.
+    Chỉ superuser mới có quyền truy cập.
+    """
+    product_service = ProductService()
+    return await product_service.export_statistics_to_excel()
+
+
+@router.get(
+    "/products/statistics-by-year/excel",
+    summary="Xuất thống kê sản phẩm bán chạy theo năm ra file Excel với nhiều sheet",
+    description="""
+    Xuất thống kê top sản phẩm có lượt bán cao nhất theo từng năm ra file Excel (tối đa 1000 sản phẩm/năm).
+    Bao gồm đầy đủ thông tin sản phẩm, shop và trạng thái.
+    
+    File Excel sẽ chứa nhiều sheet:
+    - "Year 2023": Dữ liệu sản phẩm bán chạy năm 2023
+    - "Year 2024": Dữ liệu sản phẩm bán chạy năm 2024  
+    - "Year 2025": Dữ liệu sản phẩm bán chạy năm 2025
+    - "All Years": Tổng hợp tất cả các năm
+    
+    Mỗi sheet chứa các thông tin:
+    - Year: Năm thống kê
+    - Product ID: ID của sản phẩm
+    - Product Name: Tên sản phẩm 
+    - Product Shorten Link: Link rút gọn (bidu.vn + shorten_link)
+    - Product Sold: Số lượng đã bán trong năm (từ order_items)
+    - Product Price: Giá sản phẩm (format: min-max)
+    - Product Created At: Ngày tạo (format: dd/mm/yyyy)
+    - Product Deleted At: Trạng thái xóa ("Deleted" hoặc "")
+    - Product Is Approved: Trạng thái phê duyệt (Approved/Draft/Pending/Rejected)
+    - Product Shop Name: Tên shop
+    - Product Shop Shorten Link: Link shop (bidu.vn + shop_shorten_link)
+    """,
+    response_class=StreamingResponse,
+)
+async def export_product_statistics_by_year_to_excel(
+    year_start: int = Query(2023, description="Năm bắt đầu"),
+    year_end: int = Query(2025, description="Năm kết thúc"),
+    limit_per_year: int = Query(
+        50, ge=1, le=1000, description="Số lượng sản phẩm tối đa mỗi năm"
+    ),
+    # current_user: Dict = Depends(get_current_superuser)
+):
+    """
+    Xuất thống kê sản phẩm bán chạy theo từng năm với thông tin chi tiết ra Excel.
+    Chỉ superuser mới có quyền truy cập.
+    """
+    order_service = OrderService()
+    return await order_service.export_statistics_with_product_info_to_excel(
+        year_start=year_start, year_end=year_end, limit_per_year=limit_per_year
+    )
