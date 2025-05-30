@@ -15,6 +15,16 @@ class TrackingType(Enum):
     REVIEW = "review"
 
 
+class EventType(Enum):
+    """Event types."""
+
+    VIEW = "view"
+    ADD_TO_CART = "add_to_cart"
+    PURCHASE = "purchase"
+    FAVORITE = "favorite"
+    REVIEW = "review"
+
+
 class TableName:
     """Table/Collection names."""
 

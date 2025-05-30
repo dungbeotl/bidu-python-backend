@@ -123,3 +123,48 @@ class UserRepository(BaseRepository[User]):
         # Thực hiện aggregation với Beanie
         raw_users = await User.aggregate(pipeline, allowDiskUse=True).to_list()
         return convert_mongo_document(raw_users)
+
+    async def get_users_for_personalize_ecommerce(
+        self,
+        limit: Optional[int] = None,
+        skip: int = 0,
+        filter_dict: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Lấy dữ liệu người dùng được định dạng cho AWS Personalize với format ecommerce đơn giản.
+
+        Args:
+            limit: Số lượng người dùng tối đa (None = tất cả).
+            skip: Số người dùng bỏ qua.
+            filter_dict: Bộ lọc bổ sung.
+
+        Returns:
+            Danh sách người dùng đã được xử lý với format ecommerce đơn giản.
+        """
+        # Xác định pipeline
+        pipeline = []
+
+        # Thêm bộ lọc nếu có
+        if filter_dict:
+            pipeline.append({"$match": filter_dict})
+
+        # Project để chỉ lấy _id
+        pipeline.append(
+            {
+                "$project": {
+                    "_id": 1,
+                    "gender": 1,
+                }
+            }
+        )
+
+        # Thêm pagination
+        if skip > 0:
+            pipeline.append({"$skip": skip})
+
+        if limit is not None:
+            pipeline.append({"$limit": limit})
+
+        # Thực hiện aggregation với Beanie
+        raw_users = await User.aggregate(pipeline, allowDiskUse=True).to_list()
+        return convert_mongo_document(raw_users)

@@ -1,8 +1,8 @@
 from app.services import BaseService
 from app.db import firebase_db
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime, timedelta
-from .constant import TZ_ASIA_HCM, TrackingType, TableName
+from .constant import TZ_ASIA_HCM, TrackingType, TableName, EventType
 from app.utils import convert_to_timestamp
 from app.constants import unknown, get_payment_method_name, E_PAYMENT_IDS
 from app.db.repositories import OrderItemRepository, FeedbackRepository
@@ -16,6 +16,7 @@ from app.utils import ExportUtil, to_lower_strip
 from app.core.exceptions import BadRequestException, DatabaseException
 import logging
 from google.cloud.firestore_v1.base_query import FieldFilter
+from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger(__name__)
 
@@ -51,26 +52,91 @@ class InteractionService(BaseService[None]):
         print("End export feedback interactions for Personalize")
         return processed_interactions
 
+    async def _export_to_format(
+        self, data: List[Dict[str, Any]], format: str
+    ) -> Union[StreamingResponse, Dict[str, Any]]:
+        """
+        Helper method để export dữ liệu theo format, tránh dư thừa code.
+
+        Args:
+            data: Dữ liệu đã được xử lý
+            format: Định dạng xuất (json, csv)
+
+        Returns:
+            StreamingResponse hoặc dict thông tin
+        """
+        # Kiểm tra nếu không có dữ liệu
+        if not data:
+            return {"success": False, "message": "Không có dữ liệu tương tác"}
+
+        # Xử lý xuất theo định dạng
+        if format.lower() == "json":
+            return await ExportUtil()._export_dataset_to_json(data)
+        elif format.lower() == "csv":
+            return await ExportUtil()._export_dataset_to_csv(data)
+        else:
+            raise BadRequestException(detail=f"Định dạng {format} không được hỗ trợ")
+
     async def export_interactions_for_personalize(
-        self, format: str = "json"
-    ) -> List[Dict[str, Any]]:
-        """Export interactions for Personalize."""
+        self, format: str = "json", personalize_format: str = "custom"
+    ) -> Union[StreamingResponse, Dict[str, Any]]:
+        """Export interactions for Personalize với support cho cả custom và ecommerce format."""
         try:
-            # Get interactions for Personalize
-            processed_interactions = await self.get_interactions_for_personalize()
-            if format == "json":
-                return await ExportUtil()._export_dataset_to_json(
-                    processed_interactions
+            # Get interactions dựa trên personalize_format
+            if personalize_format == "ecommerce":
+                processed_interactions = (
+                    await self.get_interactions_for_personalize_ecommerce()
                 )
-            elif format == "csv":
-                return await ExportUtil()._export_dataset_to_csv(processed_interactions)
-            else:
-                raise BadRequestException(
-                    detail=f"Định dạng {format} không được hỗ trợ"
-                )
+            else:  # default to custom
+                processed_interactions = await self.get_interactions_for_personalize()
+
+            return await self._export_to_format(processed_interactions, format)
         except Exception as e:
             logger.error(f"Error exporting interactions for Personalize: {e}")
             raise DatabaseException(detail=f"Lỗi khi xuất dữ liệu tương tác: {e}")
+
+    async def get_interactions_for_personalize_ecommerce(self) -> List[Dict[str, Any]]:
+        """Export interactions for Personalize với format ecommerce đơn giản."""
+        processed_interactions = []
+
+        print("Start export interactions for Personalize ecommerce")
+        # Interaction from Firebase for Personalize
+        raw_interactions = await self._get_interactions_for_personalize()
+        for raw_interaction in raw_interactions:
+            # Process each raw interaction (có thể tạo nhiều record từ 1 raw)
+            records = await self._process_interaction_for_personalize_ecommerce(
+                raw_interaction
+            )
+            processed_interactions.extend(records)
+
+        print("Start export buy product interactions for Personalize ecommerce")
+        # Interaction from Order Item for Personalize
+        buy_product_interactions = await self._get_buy_product_interactions_ecommerce()
+        processed_interactions.extend(buy_product_interactions)
+
+        print("Start export feedback interactions for Personalize ecommerce")
+        # Interaction from Feedback for Personalize
+        feedback_interactions = await self._get_feeback_interactions_ecommerce()
+        processed_interactions.extend(feedback_interactions)
+
+        print("End export feedback interactions for Personalize ecommerce")
+        return processed_interactions
+
+    async def export_interactions_for_personalize_ecommerce(
+        self, format: str = "json"
+    ) -> Union[StreamingResponse, Dict[str, Any]]:
+        """Export interactions for Personalize với format ecommerce đơn giản."""
+        try:
+            # Get interactions for Personalize
+            processed_interactions = (
+                await self.get_interactions_for_personalize_ecommerce()
+            )
+            return await self._export_to_format(processed_interactions, format)
+        except Exception as e:
+            logger.error(f"Error exporting interactions for Personalize ecommerce: {e}")
+            raise DatabaseException(
+                detail=f"Lỗi khi xuất dữ liệu tương tác ecommerce: {e}"
+            )
 
     # ******************************************************#
     # Interaction from Firebase for Personalize
@@ -308,7 +374,10 @@ class InteractionService(BaseService[None]):
             buyer_address = order.get("address", {})
 
             # Đơn hàng: địa chỉ có giá trị VN hoặc "" -> lấy tỉnh thành
-            if buyer_address.get("country") == "VN" or buyer_address.get("country") == "":  # noqa: E501
+            if (
+                buyer_address.get("country") == "VN"
+                or buyer_address.get("country") == ""
+            ):  # noqa: E501
                 delivery_location = buyer_address.get("state", {}).get("name", unknown)
             elif buyer_address.get("country") == "SG":
                 delivery_location = "singapore"
@@ -326,7 +395,7 @@ class InteractionService(BaseService[None]):
             personalize_data = {
                 "USER_ID": str(user_id),
                 "ITEM_ID": str(item_id),
-                "EVENT_TYPE": TrackingType.BUY_PRODUCT.value,
+                "EVENT_TYPE": EventType.PURCHASE.value,
                 "TIMESTAMP": timestamp,
                 "SHOP_ID": str(shop_id),
                 "EVENT_VALUE": event_value,
@@ -495,7 +564,7 @@ class InteractionService(BaseService[None]):
         return {
             "USER_ID": feedback.get("user_id", unknown),
             "ITEM_ID": feedback.get("target_id", unknown),
-            "EVENT_TYPE": TrackingType.REVIEW.value,
+            "EVENT_TYPE": EventType.REVIEW.value,
             "TIMESTAMP": to_timestamp(feedback.get("created_at", unknown)),
             "SHOP_ID": feedback.get("shop_id", unknown),
             "EVENT_VALUE": feedback.get("vote_star", 0),
@@ -503,4 +572,148 @@ class InteractionService(BaseService[None]):
             "BASKET_SIZE": 0,
             "PAYMENT_METHOD": unknown,
             "DELIVERY_LOCATION": unknown,
+        }
+
+    def _convert_event_type_to_personalize(self, event_type: str) -> str:
+        """Convert event type to personalize."""
+        if event_type == TrackingType.VIEW_PRODUCT.value:
+            return EventType.VIEW.value
+        elif event_type == TrackingType.ADD_PRODUCT_TO_CART.value:
+            return EventType.ADD_TO_CART.value
+        elif event_type == TrackingType.BUY_PRODUCT.value:
+            return EventType.PURCHASE.value
+        elif event_type == TrackingType.ADD_PRODUCT_TO_FAVORITE.value:
+            return EventType.FAVORITE.value
+        return EventType.REVIEW.value
+
+    async def _process_interaction_for_personalize_ecommerce(
+        self, raw_interaction: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Process interactions for Personalize với format ecommerce đơn giản."""
+
+        # Mapping EVENT_VALUE từ action_type
+        event_value_mapping = {
+            EventType.VIEW.value: 1,
+            EventType.FAVORITE.value: 2,
+            EventType.ADD_TO_CART.value: 2.5,
+        }
+
+        # Extract base data
+        user_id = raw_interaction.get("actor_id", unknown)
+        item_id = raw_interaction.get("target_id", unknown)
+
+        tracking_type = raw_interaction.get("action_type", unknown)
+        event_type = self._convert_event_type_to_personalize(tracking_type)
+
+        event_value = event_value_mapping.get(event_type, 0)
+        visited_ats = raw_interaction.get("visited_ats", [])
+
+        # Nếu không có visited_ats, dùng created_at
+        if not visited_ats:
+            visited_ats = [raw_interaction.get("created_at")]
+
+        # Tạo record cho mỗi timestamp trong visited_ats với format ecommerce đơn giản
+        records = []
+        for timestamp in visited_ats:
+            if timestamp:  # Chỉ tạo record nếu có timestamp
+                record = {
+                    "USER_ID": user_id,
+                    "ITEM_ID": item_id,
+                    "TIMESTAMP": timestamp,
+                    "EVENT_TYPE": event_type,
+                    "EVENT_VALUE": event_value,
+                }
+                records.append(record)
+
+        return records
+
+    async def _get_buy_product_interactions_ecommerce(self):
+        """Get buy product interactions với format ecommerce đơn giản."""
+        order_item_repo = OrderItemRepository()
+        order_items = await order_item_repo.get_all_order_items()
+        personalize_interactions = []
+        for order_item in order_items:
+            personalize_interaction = (
+                self._transform_order_item_to_personalize_ecommerce(order_item)
+            )
+            if not personalize_interaction:
+                continue
+            personalize_interactions.append(personalize_interaction)
+        return personalize_interactions
+
+    def _transform_order_item_to_personalize_ecommerce(
+        self, order_item: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Transform một OrderItem thành format cho AWS Personalize với format ecommerce đơn giản.
+
+        Args:
+            order_item: Dictionary chứa dữ liệu OrderItem
+
+        Returns:
+            Dictionary với format ecommerce đơn giản cho AWS Personalize
+        """
+
+        try:
+            # Lấy các giá trị cần thiết với safe access
+            orders = order_item.get("order", [])
+            if not orders or len(orders) == 0:
+                print(f"Không tìm thấy order cho orderitem: {order_item.get('_id')}")
+                return None
+
+            order = orders[0]
+
+            item_id = order_item.get("product_id", unknown)
+            created_at = order_item.get("created_at")
+            user_id = order.get("user_id", unknown)
+
+            # Tạo timestamp
+            timestamp = to_timestamp(created_at)
+
+            # Tính EVENT_VALUE cho buy product
+            event_value = self._calculate_event_value(order)
+
+            personalize_data = {
+                "USER_ID": str(user_id),
+                "ITEM_ID": str(item_id),
+                "TIMESTAMP": timestamp,
+                "EVENT_TYPE": EventType.PURCHASE.value,
+                "EVENT_VALUE": event_value,
+            }
+
+            return personalize_data
+        except Exception as e:
+            import traceback
+
+            error_traceback = traceback.format_exc()
+            logger.error(f"Error getting buy product interactions ecommerce: {e}")
+            logger.error(f"Full traceback:\n{error_traceback}")
+            raise e
+
+    async def _get_feeback_interactions_ecommerce(self):
+        """Get review interactions với format ecommerce đơn giản."""
+        feedback_repo = FeedbackRepository()
+        feedbacks = await feedback_repo.get_all_feedback(target_type="Product")
+        personalize_interactions = []
+        for feedback in feedbacks:
+            personalize_interaction = self._transform_feedback_to_personalize_ecommerce(
+                feedback
+            )
+
+            if not personalize_interaction:
+                continue
+            personalize_interactions.append(personalize_interaction)
+        return personalize_interactions
+
+    def _transform_feedback_to_personalize_ecommerce(
+        self, feedback: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Transform feedback to personalize với format ecommerce đơn giản."""
+
+        return {
+            "USER_ID": feedback.get("user_id", unknown),
+            "ITEM_ID": feedback.get("target_id", unknown),
+            "TIMESTAMP": to_timestamp(feedback.get("created_at", unknown)),
+            "EVENT_TYPE": EventType.REVIEW.value,
+            "EVENT_VALUE": feedback.get("vote_star", 0),
         }

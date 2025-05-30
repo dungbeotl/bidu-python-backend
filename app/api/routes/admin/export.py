@@ -1,13 +1,16 @@
 from typing import Dict, List, Any, Optional
+import logging
 from fastapi import APIRouter, Depends, Query, Path, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.api.dependencies import get_current_superuser
-from app.services import UserService, ProductService, InteractionService
+from app.services import UserService, ProductService, InteractionService, ShopService
 from app.services.order import OrderService
 from bson import ObjectId
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 @router.get(
@@ -16,11 +19,16 @@ router = APIRouter()
     description="""
     Xuất dữ liệu người dùng đã được định dạng cho AWS Personalize.
     
-    Chuyển đổi dữ liệu:
-    - GENDER: male, female, other, null
-    - AGE_GROUP: 18-24, 25-34, 35-44, 45+, null
-    - MEMBERSHIP_DURATION: 0-6_months, 6-12_months, 1-2_years, 2+_years, null
+    Format Custom (personalize_format=custom):
+    - USER_ID: ID của người dùng
+    - GENDER: male, female, unisex
+    - AGE_GROUP: 18-24, 25-34, 35-44, 45+, unknown
+    - MEMBERSHIP_DURATION: 0-6_months, 6-12_months, 1-2_years, 2+_years, unknown  
     - LOCATION: Thành phố của người dùng, lấy từ địa chỉ mặc định
+    
+    Format E-commerce (personalize_format=ecommerce):
+    - USER_ID: ID của người dùng
+    - GENDER: male, female, unisex
     
     Định dạng xuất:
     - json: JSONL format (mỗi record là 1 dòng)
@@ -29,7 +37,10 @@ router = APIRouter()
     response_class=StreamingResponse,
 )
 async def export_users_for_personalize(
-    format: str = Query("json", description="Định dạng xuất (json, csv)"),
+    format: str = Query("csv", description="Định dạng xuất (json, csv)"),
+    personalize_format: str = Query(
+        "ecommerce", description="Format cho Personalize (custom, ecommerce)"
+    ),
     limit: Optional[int] = Query(None, description="Số lượng người dùng tối đa"),
     is_active: Optional[bool] = Query(
         None, description="Lọc theo trạng thái kích hoạt"
@@ -47,38 +58,11 @@ async def export_users_for_personalize(
     # Gọi service
     user_service = UserService()
     return await user_service.export_users_for_personalize(
-        format=format, limit=limit, filter_dict=filter_dict
+        format=format, 
+        limit=limit, 
+        filter_dict=filter_dict,
+        personalize_format=personalize_format
     )
-
-
-@router.get(
-    "/personalize/users/preview",
-    response_model=List[Dict[str, Any]],
-    summary="Xem trước dữ liệu cho AWS Personalize",
-    description="Xem trước dữ liệu người dùng đã được định dạng cho AWS Personalize.",
-)
-async def preview_users_for_personalize(
-    limit: int = Query(10, ge=1, le=100, description="Số lượng người dùng tối đa"),
-    is_active: Optional[bool] = Query(
-        None, description="Lọc theo trạng thái kích hoạt"
-    ),
-):
-    """
-    Xem trước dữ liệu người dùng đã được định dạng cho AWS Personalize.
-    Chỉ superuser mới có quyền truy cập.
-    """
-    # Tạo filter dict
-    filter_dict = {}
-    if is_active is not None:
-        filter_dict["is_active"] = is_active
-
-    # Lấy dữ liệu từ repository
-    user_service = UserService()
-    users_data = await user_service.get_users_for_personalize(
-        limit=limit, filter_dict=filter_dict
-    )
-
-    return users_data
 
 
 @router.get(
@@ -87,9 +71,20 @@ async def preview_users_for_personalize(
     description="""
     Xuất dữ liệu sản phẩm đã được định dạng cho AWS Personalize.
     
-    Chuyển đổi dữ liệu:
+    Format Custom (personalize_format=custom):
     - ITEM_ID: ID của sản phẩm
     - ITEM_STATUS: Trạng thái sản phẩm (ACTIVE, PENDING, DRAFT, DELETED)
+    - PRICE_MIN, PRICE_MAX: Giá min và max
+    - CATEGORY_L1,L2,L3,L4: Tên category các level
+    - GENDER, ORIGIN, STYLE, SEASONS: Thông tin chi tiết
+    - TIMESTAMP: Thời gian tạo
+    
+    Format E-commerce (personalize_format=ecommerce):
+    - ITEM_ID: ID của sản phẩm
+    - PRICE: Giá min của sản phẩm
+    - CATEGORY_L1,L2,L3: Tên category các level
+    - GENDER: male, female, unisex, null
+    - CREATION_TIMESTAMP: Thời gian tạo
     
     Định dạng xuất:
     - json: JSONL format (mỗi record là 1 dòng)
@@ -98,15 +93,18 @@ async def preview_users_for_personalize(
     response_class=StreamingResponse,
 )
 async def export_products_for_personalize(
-    format: str = Query("json", description="Định dạng xuất (json, csv)"),
+    format: str = Query("csv", description="Định dạng xuất (json, csv)"),
+    personalize_format: str = Query(
+        "ecommerce", description="Format cho Personalize (custom, ecommerce)"
+    ),
     limit: Optional[int] = Query(None, description="Số lượng sản phẩm tối đa"),
     is_approved: Optional[str] = Query(
         None, description="Lọc theo trạng thái phê duyệt (approved, pending, draft)"
     ),
     include_deleted: bool = Query(True, description="Bao gồm cả sản phẩm đã xóa"),
-    include_categories: bool = Query(False, description="Bao gồm thông tin danh mục"),
-    include_detail_info: bool = Query(False, description="Bao gồm thông tin chi tiết"),
-    include_variant: bool = Query(False, description="Bao gồm thông tin variant"),
+    include_categories: bool = Query(True, description="Bao gồm thông tin danh mục"),
+    include_detail_info: bool = Query(True, description="Bao gồm thông tin chi tiết"),
+    include_variant: bool = Query(True, description="Bao gồm thông tin variant"),
     # current_user: Dict = Depends(get_current_superuser)
 ):
     """
@@ -126,6 +124,8 @@ async def export_products_for_personalize(
 
     # Gọi service
     product_service = ProductService()
+
+    # Chọn function dựa trên personalize_format
     return await product_service.export_products_for_personalize(
         format=format,
         limit=limit,
@@ -133,86 +133,35 @@ async def export_products_for_personalize(
         include_categories=include_categories,
         include_detail_info=include_detail_info,
         include_variant=include_variant,
+        personalize_format=personalize_format,
     )
-
-
-@router.get(
-    "/personalize/products/preview",
-    response_model=List[Dict[str, Any]],
-    summary="Xem trước dữ liệu sản phẩm cho AWS Personalize",
-    description="Xem trước dữ liệu sản phẩm đã được định dạng cho AWS Personalize.",
-)
-async def preview_products_for_personalize(
-    limit: int = Query(10, ge=1, le=10000, description="Số lượng sản phẩm tối đa"),
-    is_approved: Optional[str] = Query(
-        None, description="Lọc theo trạng thái phê duyệt (approved, pending, draft)"
-    ),
-    include_deleted: bool = Query(False, description="Bao gồm cả sản phẩm đã xóa"),
-    include_categories: bool = Query(False, description="Bao gồm thông tin danh mục"),
-    include_detail_info: bool = Query(False, description="Bao gồm thông tin chi tiết"),
-    include_variant: bool = Query(False, description="Bao gồm thông tin variant"),
-    # current_user: Dict = Depends(get_current_superuser)
-):
-    """
-    Xem trước dữ liệu sản phẩm đã được định dạng cho AWS Personalize.
-    Chỉ superuser mới có quyền truy cập.
-    """
-    # Tạo filter dict
-    filter_dict = {}
-
-    # Lọc theo trạng thái phê duyệt
-    if is_approved:
-        filter_dict["is_approved"] = is_approved
-
-    # Loại bỏ sản phẩm đã xóa nếu không bao gồm
-    if not include_deleted:
-        filter_dict["deleted_at"] = None
-
-    # Lấy dữ liệu từ repository
-    product_service = ProductService()
-    products_raw = await product_service.repository.get_products_for_personalize(
-        limit=limit,
-        filter_dict=filter_dict,
-        include_categories=include_categories,
-        include_detail_info=include_detail_info,
-        include_variant=include_variant,
-    )
-
-    products_data = await product_service._process_products_for_personalize(
-        products_raw
-    )
-    return products_data
-
-
-@router.get(
-    "/personalize/interactions/preview",
-    response_model=List[Dict[str, Any]],
-    summary="Xem trước dữ liệu Tương tác (Interactions) cho AWS Personalize",
-    description="Xem trước dữ liệu tương tác đã được định dạng cho AWS Personalize.",
-)
-async def preview_interactions_for_personalize(
-    limit: int = Query(10, ge=1, le=10000, description="Số lượng tương tác tối đa"),
-    # current_user: Dict = Depends(get_current_superuser)
-):
-    """
-    Xem trước dữ liệu tương tác đã được định dạng cho AWS Personalize.
-    Chỉ superuser mới có quyền truy cập.
-    """
-
-    # Lấy dữ liệu từ repository
-    interaction_service = InteractionService()
-    interactions_raw = await interaction_service.get_interactions_for_personalize()
-    return interactions_raw
 
 
 @router.get(
     "/personalize/interactions/export",
-    response_model=List[Dict[str, Any]],
+    response_class=StreamingResponse,
     summary="Xuất dữ liệu Tương tác (Interactions) cho AWS Personalize",
-    description="Xuất dữ liệu tương tác đã được định dạng cho AWS Personalize.",
+    description="""
+    Xuất dữ liệu tương tác đã được định dạng cho AWS Personalize.
+    
+    Format Custom (personalize_format=custom):
+    - USER_ID, ITEM_ID, EVENT_TYPE, TIMESTAMP
+    - SHOP_ID, EVENT_VALUE, ORDER_VALUE, BASKET_SIZE
+    - PAYMENT_METHOD, DELIVERY_LOCATION
+    
+    Format E-commerce (personalize_format=ecommerce):
+    - USER_ID, ITEM_ID, TIMESTAMP, EVENT_TYPE, EVENT_VALUE
+    
+    Định dạng xuất:
+    - json: JSONL format (mỗi record là 1 dòng)
+    - csv: CSV format
+    """,
 )
 async def export_interactions_for_personalize(
-    format: str = Query("json", description="Định dạng xuất (json, csv)"),
+    format: str = Query("csv", description="Định dạng xuất (json, csv)"),
+    personalize_format: str = Query(
+        "ecommerce", description="Format cho Personalize (custom, ecommerce)"
+    ),
     limit: int = Query(10, ge=1, le=10000, description="Số lượng tương tác tối đa"),
     # current_user: Dict = Depends(get_current_superuser)
 ):
@@ -222,7 +171,9 @@ async def export_interactions_for_personalize(
     """
     # Lấy dữ liệu từ repository
     interaction_service = InteractionService()
-    return await interaction_service.export_interactions_for_personalize(format=format)
+    return await interaction_service.export_interactions_for_personalize(
+        format=format, personalize_format=personalize_format
+    )
 
 
 # **************************************************
@@ -303,3 +254,36 @@ async def export_product_statistics_by_year_to_excel(
     return await order_service.export_statistics_with_product_info_to_excel(
         year_start=year_start, year_end=year_end, limit_per_year=limit_per_year
     )
+
+@router.post(
+    "/shops/by-ids",
+    summary="Lấy thông tin shop theo danh sách IDs",
+    description="""
+    Lấy thông tin shop theo danh sách IDs.
+    Trả về dữ liệu gồm:
+    - _id: ID của shop
+    - updatedAt: Thời gian cập nhật cuối cùng
+    """,
+)
+async def get_shop_by_ids(
+    shop_ids: List[str] = Query(..., description="Danh sách shop IDs")
+):
+    """
+    Lấy thông tin shop theo danh sách IDs.
+    Chỉ superuser mới có quyền truy cập.
+    """
+    try:
+        shop_service = ShopService()
+        shops = await shop_service.get_shop_by_ids(shop_ids)
+        
+        return {
+            "success": True,
+            "message": f"Lấy thông tin {len(shops)} shop thành công",
+            "data": shops,
+            "total": len(shops)
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi khi lấy thông tin shop: {str(e)}"
+        )

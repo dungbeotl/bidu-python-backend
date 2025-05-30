@@ -21,6 +21,9 @@ from .user import UserService
 # OrderService
 from .order import OrderService
 
+# ShopService
+from .shop import ShopService
+
 # Export tất cả
 __all__ = [
     'BaseService',
@@ -29,4 +32,5 @@ __all__ = [
     'InteractionService',
     'UserService',
     'OrderService',
+    'ShopService',
 ]

@@ -12,5 +12,17 @@ from .repositories import (
     UserRepository,
     ProductRepository,
     AddressRepository,
-    # OrderItemRepository,
+    ShopRepository,
 )
+
+__all__ = [
+    "connect_to_mongo",
+    "close_mongo_connection",
+    "redis",
+    "FirebaseDB",
+    "firebase_db",
+    "UserRepository",
+    "ProductRepository",
+    "AddressRepository",
+    "ShopRepository",
+]

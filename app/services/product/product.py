@@ -30,12 +30,13 @@ class ProductService(BaseService[ProductRepository]):
 
     async def export_products_for_personalize(
         self,
-        format: str = "json",
+        format: str = "csv",
         limit: Optional[int] = None,
         filter_dict: Optional[Dict[str, Any]] = None,
-        include_categories: bool = False,
-        include_detail_info: bool = False,
-        include_variant: bool = False,
+        include_categories: bool = True,
+        include_detail_info: bool = True,
+        include_variant: bool = True,
+        personalize_format: bool = True,
     ) -> Union[StreamingResponse, Dict[str, Any]]:
         """
         Xuất dữ liệu sản phẩm cho AWS Personalize.
@@ -63,9 +64,14 @@ class ProductService(BaseService[ProductRepository]):
                 return {"success": False, "message": "Không có dữ liệu sản phẩm"}
 
             # Xử lý dữ liệu
-            processed_products = await self._process_products_for_personalize(
-                raw_products
-            )
+            if personalize_format == "custom":
+                processed_products = await self._process_products_for_personalize(
+                    raw_products
+                )
+            elif personalize_format == "ecommerce":
+                processed_products = await self._process_products_for_ecommerce(
+                    raw_products
+                )
 
             # Xử lý xuất theo định dạng
             if format.lower() == "json":
@@ -134,7 +140,7 @@ class ProductService(BaseService[ProductRepository]):
         processed_product.update(
             {
                 "GENDER": to_lower_strip(product_details.gender),
-                "BRAND": to_lower_strip(product_details.brand),
+                # "BRAND": to_lower_strip(product_details.brand),
                 "ORIGIN": to_lower_strip(product_details.origin),
                 "STYLE": to_lower_strip(product_details.style),
                 "SEASONS": to_lower_strip(product_details.seasons),
@@ -191,44 +197,24 @@ class ProductService(BaseService[ProductRepository]):
 
         return result
 
-    def extract_price_info(self, product_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Luôn return numeric values, không bao giờ None/null
-        Tối ưu: giảm số lần lặp và cải thiện hiệu suất
-        """
-        variants = product_data.get("variants")
+    def extract_price_info(self, product: Dict[str, Any]) -> Dict[str, Any]:
+        """Trích xuất thông tin giá từ sản phẩm"""
+        variants = product.get("variants", [])
 
         if variants:
-            # Sử dụng generator expression để tránh tạo list trung gian
-            # và tính min/max trong một lần duyệt
-            valid_prices = (
-                variant.get("before_sale_price")
-                for variant in variants
-                if variant.get("before_sale_price", 0) > 0
-            )
-
-            # Sử dụng next() với default để kiểm tra có giá trị hợp lệ không
-            try:
-                first_price = next(valid_prices)
-                min_price = max_price = first_price
-
-                # Tính min/max cho các giá còn lại
-                for price in valid_prices:
-                    if price < min_price:
-                        min_price = price
-                    elif price > max_price:
-                        max_price = price
-
-                return {"PRICE_MIN": min_price, "PRICE_MAX": max_price}
-            except StopIteration:
-                pass
-
-        # Fallback: kiểm tra giá cơ bản của sản phẩm
-        base_price = product_data.get("before_sale_price", 0)
-        if base_price and base_price > 0:
-            return {"PRICE_MIN": base_price, "PRICE_MAX": base_price}
-
-        return {"PRICE_MIN": 0, "PRICE_MAX": 0}
+            # Lấy giá từ variants
+            price_variants = self._price_min_max_variants(variants)
+            return {
+                "PRICE_MIN": price_variants["before_sale_price_min_max"]["min"],
+                "PRICE_MAX": price_variants["before_sale_price_min_max"]["max"],
+            }
+        else:
+            # Fallback sang before_sale_price của product
+            before_sale_price = product.get("before_sale_price")
+            return {
+                "PRICE_MIN": before_sale_price,
+                "PRICE_MAX": before_sale_price,
+            }
 
     def _price_product(self, product: Dict[str, Any]) -> Dict[str, Any]:
         """Xác định giá sản phẩm"""
@@ -312,8 +298,18 @@ class ProductService(BaseService[ProductRepository]):
                     detail_collectors[category_name].extend(values)
 
         # Tạo ProcessedProductDetails với các giá trị đã join
+        # check gender = nữ -> female, gender = nam -> male, gender = unisex -> unisex
+        gender = self._join_values(detail_collectors[CategoryNames.GENDER])
+        if gender == "Nữ":
+            gender = "female"
+        elif gender == "Nam":
+            gender = "male"
+        elif gender == "Unisex":
+            gender = "unisex"
+        else:
+            gender = unknown
         return ProcessedProductDetails(
-            gender=self._join_values(detail_collectors[CategoryNames.GENDER]),
+            gender=gender,
             brand=self._join_values(detail_collectors[CategoryNames.BRAND]),
             origin=self._join_values(detail_collectors[CategoryNames.ORIGIN]),
             style=self._join_values(detail_collectors[CategoryNames.STYLE]),
@@ -580,4 +576,219 @@ class ProductService(BaseService[ProductRepository]):
         else:
             return f"{format_price(min_price)}-{format_price(max_price)}"
 
-    
+    # **************************************************
+    # E-commerce format methods for AWS Personalize
+    # **************************************************
+
+    def _add_category_info_ecommerce(
+        self,
+        processed_product: Dict[str, Any],
+        product: Dict[str, Any],
+        flat_categories: List[Dict[str, Any]],
+    ) -> None:
+        """Thêm thông tin category L1, L2, L3 cho format ecommerce"""
+        category_ids = product.get("list_category_id") or []
+
+        # Đảm bảo category_ids là một list
+        if not isinstance(category_ids, list):
+            category_ids = []
+
+        # Xử lý 3 levels category
+        for level in range(1, 4):  # L1, L2, L3
+            array_index = level - 1
+            category_name = self._get_category_name_by_level(
+                category_ids, array_index, flat_categories
+            )
+            processed_product[f"CATEGORY_L{level}"] = to_lower_strip(category_name)
+
+    async def _process_single_product_for_ecommerce(
+        self,
+        product: Dict[str, Any],
+        flat_categories: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Xử lý một sản phẩm đơn lẻ cho format e-commerce"""
+
+        processed_product = {
+            "ITEM_ID": product["_id"],
+        }
+
+        # Xử lý thông tin chi tiết sản phẩm để lấy GENDER
+        product_details = self._extract_product_details(product)
+        processed_product["GENDER"] = to_lower_strip(product_details.gender)
+
+        price = self._extract_min_price(product)
+        processed_product["PRICE"] = price
+
+        # Xử lý categories L1, L2, L3
+        self._add_category_info_ecommerce(processed_product, product, flat_categories)
+
+        # Xử lý timestamp
+        creation_timestamp = to_timestamp(product.get("createdAt"))
+        if creation_timestamp:
+            processed_product["CREATION_TIMESTAMP"] = creation_timestamp
+
+        return processed_product
+
+    def _extract_min_price(self, product: Dict[str, Any]) -> float:
+        """Trích xuất giá min từ sản phẩm"""
+        variants = product.get("variants", [])
+
+        if variants:
+            # Lấy giá min từ variants
+            prices = []
+            for variant in variants:
+                before_sale_price = variant.get("before_sale_price")
+                if before_sale_price is not None and before_sale_price > 0:
+                    prices.append(before_sale_price)
+
+            if prices:
+                return min(prices)
+
+        # Fallback sang before_sale_price của product
+        before_sale_price = product.get("before_sale_price")
+        if before_sale_price is not None and before_sale_price > 0:
+            return before_sale_price
+
+        return 0.0
+
+    async def _process_products_for_ecommerce(
+        self, raw_products: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Xử lý dữ liệu sản phẩm thô cho định dạng e-commerce AWS Personalize.
+
+        Args:
+            raw_products: Danh sách sản phẩm thô từ repository.
+
+        Returns:
+            Danh sách sản phẩm đã xử lý cho e-commerce format.
+        """
+        flat_categories = await self._get_flat_categories()
+
+        processed_products = []
+        for product in raw_products:
+            try:
+                processed_product = await self._process_single_product_for_ecommerce(
+                    product, flat_categories
+                )
+                processed_products.append(processed_product)
+            except Exception as e:
+                # Log error và tiếp tục xử lý sản phẩm khác
+                logger.error(
+                    f"Error processing product for e-commerce {product.get('_id', unknown)}: {e}"
+                )
+                continue
+
+        return processed_products
+
+    async def export_products_for_personalize_ecommerce(
+        self,
+        format: str = "json",
+        limit: Optional[int] = None,
+        filter_dict: Optional[Dict[str, Any]] = None,
+    ) -> Union[StreamingResponse, Dict[str, Any]]:
+        """
+        Xuất dữ liệu sản phẩm cho AWS Personalize với format ecommerce đơn giản.
+
+        Args:
+            format: Định dạng xuất (json, csv).
+            limit: Số lượng sản phẩm tối đa (None = tất cả).
+            filter_dict: Bộ lọc bổ sung.
+
+        Returns:
+            StreamingResponse với dữ liệu định dạng hoặc dict thông tin.
+        """
+        try:
+            # Lấy dữ liệu từ repository
+            products_data = await self.get_products_for_personalize_ecommerce(
+                limit=limit, filter_dict=filter_dict
+            )
+
+            # Kiểm tra nếu không có dữ liệu
+            if not products_data:
+                return {"success": False, "message": "Không có dữ liệu sản phẩm"}
+
+            # Sử dụng _prepare_data để đảm bảo tất cả ObjectId đã được xử lý
+            processed_data = self._prepare_data(products_data)
+
+            # Xử lý xuất theo định dạng
+            if format.lower() == "json":
+                return await ExportUtil()._export_dataset_to_json(processed_data)
+            elif format.lower() == "csv":
+                return await ExportUtil()._export_dataset_to_csv(processed_data)
+            else:
+                raise BadRequestException(
+                    detail=f"Định dạng {format} không được hỗ trợ"
+                )
+
+        except Exception as e:
+            logger.error(
+                f"Error exporting products for personalize ecommerce: {str(e)}"
+            )
+            raise DatabaseException(
+                detail=f"Lỗi khi xuất dữ liệu sản phẩm ecommerce: {str(e)}"
+            )
+
+    async def get_products_for_personalize_ecommerce(
+        self,
+        limit: Optional[int] = None,
+        skip: int = 0,
+        filter_dict: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Lấy dữ liệu sản phẩm được định dạng cho AWS Personalize với format ecommerce đơn giản.
+        Format ecommerce: ITEM_ID, CATEGORY_L1, CATEGORY_L2, CATEGORY_L3, CREATION_TIMESTAMP, GENDER.
+        """
+        try:
+            # Lấy dữ liệu từ repository
+            raw_products = await self.repository.get_products_for_personalize_ecommerce(
+                limit=limit, filter_dict=filter_dict
+            )
+            print("Get products for personalize ecommerce: ", len(raw_products))
+
+            # Xử lý dữ liệu
+            processed_products = await self._process_products_for_personalize_ecommerce(
+                raw_products
+            )
+
+            print(
+                "Processed products for personalize ecommerce: ",
+                len(processed_products),
+            )
+
+            return processed_products
+        except Exception as e:
+            logger.error(f"Error getting products for personalize ecommerce: {str(e)}")
+            raise DatabaseException(
+                detail=f"Lỗi khi lấy dữ liệu sản phẩm ecommerce: {str(e)}"
+            )
+
+    async def _process_products_for_personalize_ecommerce(
+        self, raw_products: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Xử lý dữ liệu sản phẩm thô cho định dạng ecommerce AWS Personalize đơn giản.
+
+        Args:
+            raw_products: Danh sách sản phẩm thô từ repository.
+
+        Returns:
+            Danh sách sản phẩm đã xử lý cho ecommerce format đơn giản.
+        """
+        flat_categories = await self._get_flat_categories()
+
+        processed_products = []
+        for product in raw_products:
+            try:
+                processed_product = await self._process_single_product_for_ecommerce(
+                    product, flat_categories
+                )
+                processed_products.append(processed_product)
+            except Exception as e:
+                # Log error và tiếp tục xử lý sản phẩm khác
+                logger.error(
+                    f"Error processing product for ecommerce {product.get('_id', unknown)}: {e}"
+                )
+                continue
+
+        return processed_products

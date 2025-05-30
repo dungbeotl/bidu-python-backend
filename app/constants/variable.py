@@ -1,6 +1,7 @@
 from enum import Enum
 
-unknown = "unknown"
+unknown = 'unknown'
+unknown_value = None
 
 # Payment method id
 class PaymentMethodId(Enum):
