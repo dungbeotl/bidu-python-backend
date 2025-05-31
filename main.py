@@ -8,8 +8,11 @@ from fastapi.responses import JSONResponse
 
 from app.core import settings
 from app.core.openapi import setup_openapi, tags_metadata
-from app.api import auth, export, users  # Import từ app/api/__init__.py
-from app.db import connect_to_mongo, close_mongo_connection  # Import từ app/db/__init__.py
+from app.api import auth, export, users, recommendation  # Import từ app/api/__init__.py
+from app.db import (
+    connect_to_mongo,
+    close_mongo_connection,
+)  # Import từ app/db/__init__.py
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from app.utils.serialization import MongoJSONEncoder
@@ -108,6 +111,11 @@ setup_openapi(app)
 app.include_router(auth.router, prefix="/api/admin/auth", tags=["Admin Authentication"])
 app.include_router(users.router, prefix="/api/admin/users", tags=["Admin Users"])
 app.include_router(export.router, prefix="/api/admin/export", tags=["Admin Export"])
+
+# App routes
+app.include_router(
+    recommendation.router, prefix="/api/app", tags=["App Recommendations"]
+)
 
 # Exception handlers
 app.add_exception_handler(Exception, http_error_handler)

@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     FIREBASE_CREDENTIALS_PATH: Optional[str] = None
     FIREBASE_CREDENTIALS_DICT: Optional[Dict[str, Any]] = None
     FIREBASE_PROJECT_ID: Optional[str] = None
+    
+    # AWS Settings
+    AWS_REGION: Optional[str] = None
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    AWS_RECOMMENDER_ARN_FOR_YOU: Optional[str] = None
+    AWS_RECOMMENDER_ARN_MOST_VIEWED: Optional[str] = None
+    AWS_RECOMMENDER_ARN_BEST_SELLERS: Optional[str] = None
 
     @field_validator("CORS_ORIGINS", mode="before")
     def assemble_cors_origins(cls, v):

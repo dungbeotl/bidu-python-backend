@@ -10,4 +10,4 @@ from .dependencies import (
 )
 
 # Export routes
-from .routes import auth, export, users
+from .routes import auth, export, users, recommendation

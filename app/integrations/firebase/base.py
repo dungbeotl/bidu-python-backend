@@ -7,7 +7,7 @@ from google.cloud.firestore import SERVER_TIMESTAMP
 from firebase_admin import db
 
 from app.core.exceptions import NotFoundException, DatabaseException
-from app.db.firebase_db import firebase_db
+from app.db.firebase import firebase_db
 
 # Type variable cho Model
 M = TypeVar("M", bound=BaseModel)
